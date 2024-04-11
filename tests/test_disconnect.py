@@ -8,7 +8,10 @@ import pytest
 from anyio.streams.memory import MemoryObjectReceiveStream
 
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.types import Message, Receive, Scope, Send
+
+from .test_requests import TestClientFactory
 
 
 async def _test_helper(app_send: Send, app_receive: Receive) -> bool:
@@ -31,7 +34,7 @@ async def _test_helper(app_send: Send, app_receive: Receive) -> bool:
     return is_disconnected
 
 
-@pytest.mark.xfail("this is broken currently")
+@pytest.mark.xfail(reason="this is broken currently")
 async def test_disconnect_with_receive_channel_as_receiver(
     anyio_backend_name: str,
     anyio_backend_options: dict[str, Any],
@@ -64,3 +67,28 @@ async def test_disconnect_with_receive_channel_as_receiver_workaround(
     send_channel, receive_channel = anyio.create_memory_object_stream[Message](1)
     receive_wrapper = ReceiveWrapper(receive_channel)
     assert await _test_helper(send_channel.send, receive_wrapper.receive)
+
+
+@pytest.mark.xfail(reason="currently is_disconnected() will eat the first message sent")
+def test_disconnect_does_not_timeout_or_eat_messages(
+    test_client_factory: TestClientFactory,
+) -> None:
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        request = Request(scope, receive)
+        # removing the is_disconnected check makes the test pass
+        assert not await request.is_disconnected()
+        with anyio.fail_after(1):
+            body = await request.body()
+        response = JSONResponse({"body": body.decode()})
+        await response(scope, receive, send)
+
+    client = test_client_factory(app)
+
+    response = client.get("/")
+    assert response.json() == {"body": ""}
+
+    response = client.post("/", json={"a": "123"})
+    assert response.json() == {"body": '{"a": "123"}'}
+
+    response = client.post("/", data="abc")  # type: ignore
+    assert response.json() == {"body": "abc"}
